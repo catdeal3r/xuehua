@@ -5,11 +5,12 @@ use std::{
     process::Command,
 };
 
+use futures_util::{FutureExt, future::BoxFuture};
 use mlua::{AnyUserData, FromLuaMulti, IntoLuaMulti, Lua, MultiValue, Value};
 
 use crate::{
     ExternalResult,
-    executor::{Error, Executor, LuaCommand},
+    executor::{Error, Executor, runner::LuaCommand},
 };
 
 #[derive(Debug)]
@@ -58,18 +59,10 @@ impl BubblewrapExecutor {
             options,
         })
     }
-}
 
-impl Executor for BubblewrapExecutor {
-    fn create(&self, lua: &Lua, value: MultiValue) -> Result<AnyUserData, Error> {
-        let (program,) = <(OsString,)>::from_lua_multi(value, lua)?;
-        let userdata = lua.create_userdata(LuaCommand::new(&program))?;
-
-        Ok(userdata)
-    }
-
-    fn dispatch(&mut self, lua: &Lua, data: AnyUserData) -> Result<MultiValue, Error> {
-        let mut command = Command::new("bwrap");
+    async fn dispatch_impl(&mut self, lua: Lua, data: AnyUserData) -> Result<MultiValue, Error> {
+        let command = Command::new("bwrap");
+        let mut command = command;
 
         // essentials
         command
@@ -153,6 +146,23 @@ impl Executor for BubblewrapExecutor {
         table.set("stdout", stdout)?;
         table.set("stderr", stderr)?;
 
-        Ok(Value::Table(table).into_lua_multi(lua)?)
+        Ok(Value::Table(table).into_lua_multi(&lua)?)
+    }
+}
+
+impl Executor for BubblewrapExecutor {
+    fn create(&self, lua: &Lua, value: MultiValue) -> Result<AnyUserData, Error> {
+        let (program,) = <(OsString,)>::from_lua_multi(value, lua)?;
+        let userdata = lua.create_userdata(LuaCommand::new(&program))?;
+
+        Ok(userdata)
+    }
+
+    fn dispatch(
+        &'_ mut self,
+        lua: Lua,
+        data: AnyUserData,
+    ) -> BoxFuture<'_, Result<MultiValue, Error>> {
+        self.dispatch_impl(lua, data).boxed()
     }
 }
